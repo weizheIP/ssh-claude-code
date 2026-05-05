@@ -1,7 +1,7 @@
 {
   "name": "ssh-claude-code",
-  "version": "1.0.0",
-  "description": "SSH 远程开发桥接 — 动态连接远端 Linux 机器上的 Claude Code 进行远程开发",
+  "version": "1.1.0",
+  "description": "SSH 远程开发桥接 — 动态连接远端 Linux 机器上的 Claude Code,并通过 sshfs 挂载远端项目目录到本地",
   "author": {
     "name": "Zhuanz"
   },

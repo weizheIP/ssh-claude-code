@@ -29,6 +29,9 @@ from pathlib import Path
 HOSTS_FILE = Path.home() / ".claude" / "ssh-hosts.tsv"
 STATE_FILE = Path.home() / ".claude" / "ssh-state.json"
 
+# 本地挂载点：MCP 进程的 cwd（即 Claude Code 选中的项目目录）
+LOCAL_MOUNT = os.path.realpath(os.getcwd())
+
 # ── 状态管理 ──────────────────────────────────────────────────
 def load_state() -> dict:
     if STATE_FILE.exists():
@@ -73,6 +76,228 @@ def find_host(name_or_target: str) -> dict | None:
         if h["name"] == name_or_target or h["ssh_target"] == name_or_target:
             return h
     return None
+
+# ── 挂载管理 (sshfs / sshfs-win) ──────────────────────────────
+IS_WIN = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
+
+# Windows: sshfs-win 不会 daemonize, 需要长驻进程引用
+_mount_proc = None
+
+def _which(cmd: str) -> str:
+    finder = "where" if IS_WIN else "which"
+    try:
+        r = subprocess.run([finder, cmd], capture_output=True, text=True)
+    except Exception:
+        return ""
+    if r.returncode != 0:
+        return ""
+    out = r.stdout.strip().splitlines()
+    return out[0].strip() if out else ""
+
+def _macfuse_installed() -> bool:
+    return any(os.path.exists(p) for p in (
+        "/Library/Filesystems/macfuse.fs",
+        "/Library/Filesystems/osxfuse.fs",
+    ))
+
+def _winfsp_installed() -> bool:
+    return any(os.path.exists(p) for p in (
+        r"C:\Program Files\WinFsp",
+        r"C:\Program Files (x86)\WinFsp",
+    ))
+
+def _sshfs_bin() -> str:
+    """定位 sshfs 可执行文件 (Windows 上是 sshfs-win)."""
+    if IS_WIN:
+        for c in (
+            r"C:\Program Files\SSHFS-Win\bin\sshfs.exe",
+            r"C:\Program Files (x86)\SSHFS-Win\bin\sshfs.exe",
+        ):
+            if os.path.exists(c):
+                return c
+    return _which("sshfs")
+
+def _install_hint() -> str:
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    if IS_WIN:
+        script = (f"{plugin_root}\\scripts\\install-sshfs-win.ps1"
+                  if plugin_root else "scripts\\install-sshfs-win.ps1")
+        return (
+            "缺少 WinFsp / sshfs-win,文件树挂载未启用 (remote_* 工具仍可正常使用)。\n"
+            f"  PowerShell 安装:  powershell -ExecutionPolicy Bypass -File \"{script}\"\n"
+            "  或 Chocolatey:    choco install winfsp sshfs-win\n"
+            "  或下载安装包:     https://github.com/winfsp/sshfs-win/releases"
+        )
+    if IS_MAC:
+        script = (f"{plugin_root}/scripts/install-sshfs.sh"
+                  if plugin_root else "scripts/install-sshfs.sh")
+        return (
+            "缺少 sshfs / macFUSE,文件树挂载未启用 (remote_* 工具仍可正常使用)。\n"
+            f"  运行安装脚本:  bash {script}\n"
+            "  或手动安装:    brew install --cask macfuse && brew install gromgit/fuse/sshfs-mac"
+        )
+    return (
+        "缺少 sshfs,文件树挂载未启用 (remote_* 工具仍可正常使用)。\n"
+        "  Ubuntu/Debian: sudo apt install sshfs\n"
+        "  RHEL/CentOS:   sudo yum install fuse-sshfs"
+    )
+
+def check_sshfs() -> tuple[bool, str]:
+    if not _sshfs_bin():
+        return False, _install_hint()
+    if IS_MAC and not _macfuse_installed():
+        return False, _install_hint()
+    if IS_WIN and not _winfsp_installed():
+        return False, _install_hint()
+    return True, ""
+
+def is_mount(path: str) -> bool:
+    """检测 path 是否为当前挂载点."""
+    if IS_WIN:
+        # 我们启动的 sshfs-win 进程仍存活即认为挂载中
+        return _mount_proc is not None and _mount_proc.poll() is None
+    try:
+        r = subprocess.run(["mount"], capture_output=True, text=True, timeout=5)
+        target = os.path.realpath(path)
+        for line in r.stdout.splitlines():
+            if f" on {target} " in line:
+                return True
+    except Exception:
+        pass
+    return False
+
+def unmount_path(path: str) -> bool:
+    """解除 sshfs 挂载."""
+    global _mount_proc
+    if IS_WIN:
+        if _mount_proc is not None:
+            try:
+                _mount_proc.terminate()
+                _mount_proc.wait(timeout=5)
+            except Exception:
+                try:
+                    _mount_proc.kill()
+                except Exception:
+                    pass
+            _mount_proc = None
+        return True
+
+    if not is_mount(path):
+        return True
+    try:
+        if IS_MAC:
+            r = subprocess.run(["umount", path], capture_output=True, text=True, timeout=10)
+            if r.returncode != 0:
+                subprocess.run(["diskutil", "unmount", "force", path],
+                               capture_output=True, text=True, timeout=15)
+        else:
+            subprocess.run(["fusermount", "-u", path],
+                           capture_output=True, text=True, timeout=10)
+        time.sleep(0.3)
+        return not is_mount(path)
+    except Exception:
+        return False
+
+def mount_remote(state: dict) -> tuple[bool, str]:
+    """sshfs 挂载远端 project_dir 到本地 LOCAL_MOUNT."""
+    global _mount_proc
+    available, hint = check_sshfs()
+    if not available:
+        return False, hint
+
+    ssh_target = state["ssh_target"]
+    project_dir = state["project_dir"]
+    jump_host = state.get("jump_host", "")
+    host_label = state.get("host", "remote") or "remote"
+
+    unmount_path(LOCAL_MOUNT)
+
+    opts = [
+        "ServerAliveInterval=60",
+        "ServerAliveCountMax=5",
+        "reconnect",
+        "ConnectTimeout=10",
+    ]
+    if IS_MAC:
+        opts.extend([
+            "defer_permissions",
+            "noappledouble",
+            "follow_symlinks",
+            f"volname={host_label}",
+        ])
+    elif IS_WIN:
+        # sshfs-win: 把远端 uid/gid 映射到当前用户, 避免权限错乱
+        opts.extend([
+            "idmap=user",
+            "uid=-1",
+            "gid=-1",
+            "umask=000",
+            "create_file_umask=0644",
+            "create_dir_umask=0755",
+            f"volname={host_label}",
+        ])
+    else:
+        opts.append("follow_symlinks")
+
+    if jump_host:
+        opts.append(f"ProxyJump={jump_host}")
+
+    sshfs_bin = _sshfs_bin()
+    cmd = [sshfs_bin, "-o", ",".join(opts),
+           f"{ssh_target}:{project_dir}", LOCAL_MOUNT]
+
+    if IS_WIN:
+        # Windows: sshfs-win 前台运行, 用 Popen 后台启动, 进程存活即挂载存活
+        try:
+            creationflags = 0
+            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+            _mount_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=creationflags,
+            )
+        except Exception as e:
+            return False, f"sshfs 挂载异常: {e}"
+
+        # 等待挂载完成或失败
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if _mount_proc.poll() is not None:
+                err = b""
+                try:
+                    err = _mount_proc.stderr.read() or b""
+                except Exception:
+                    pass
+                msg = err.decode(errors="replace").strip() or "进程已退出"
+                _mount_proc = None
+                return False, f"sshfs 挂载失败: {msg}"
+            try:
+                # 能 listdir 即认为挂载就绪
+                os.listdir(LOCAL_MOUNT)
+                state["mount_point"] = LOCAL_MOUNT
+                return True, f"已挂载 {ssh_target}:{project_dir} → {LOCAL_MOUNT}"
+            except OSError:
+                pass
+            time.sleep(0.3)
+        return False, "sshfs 挂载超时"
+
+    # macOS / Linux: sshfs 默认 daemonize, run 即可
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return False, "sshfs 挂载超时"
+    except Exception as e:
+        return False, f"sshfs 挂载异常: {e}"
+
+    if r.returncode != 0:
+        msg = (r.stderr or r.stdout).strip() or "未知错误"
+        return False, f"sshfs 挂载失败: {msg}"
+
+    state["mount_point"] = LOCAL_MOUNT
+    return True, f"已挂载 {ssh_target}:{project_dir} → {LOCAL_MOUNT}"
 
 # ── 远端进程管理器 ─────────────────────────────────────────────
 class RemoteProxy:
@@ -370,15 +595,34 @@ def handle_ssh_connect(args: dict) -> str:
         save_state({"connected": False})
         return f"启动远端 Claude Code 失败: {e}"
 
+    # sshfs 挂载远端目录到本地 cwd (失败不阻塞,只提示)
+    mount_ok, mount_msg = mount_remote(state)
+    save_state(state)
+
     jump_info = f", 跳板: {jump_host}" if jump_host else ""
-    return f"已连接 {ssh_target} → 远端 Claude Code 就绪 (项目: {project_dir}{jump_info})\n远端工具已自动加载，现在可以直接在远端机器上操作。"
+    lines = [
+        f"已连接 {ssh_target} → 远端 Claude Code 就绪 (项目: {project_dir}{jump_info})",
+        "远端工具已自动加载,现在可以直接在远端机器上操作。",
+    ]
+    if mount_ok:
+        lines.append(f"[挂载] {mount_msg}")
+    else:
+        lines.append(f"[挂载] {mount_msg}")
+    return "\n".join(lines)
 
 def handle_ssh_disconnect(args: dict) -> str:
     state = load_state()
     host = state.get("ssh_target", "unknown")
+    mount_point = state.get("mount_point", "")
     remote.stop()
+    unmount_msg = ""
+    if mount_point:
+        if unmount_path(mount_point):
+            unmount_msg = f"\n已卸载本地挂载: {mount_point}"
+        else:
+            unmount_msg = f"\n警告: 卸载 {mount_point} 失败,可能需要手动 umount"
     save_state({"connected": False})
-    return f"已断开 {host}"
+    return f"已断开 {host}{unmount_msg}"
 
 def handle_ssh_folder(args: dict) -> str:
     new_dir = args.get("path", "").strip()
@@ -389,16 +633,29 @@ def handle_ssh_folder(args: dict) -> str:
     if not state.get("connected"):
         return "未连接。请先 /ssh-connect"
 
+    # 卸载旧挂载
+    old_mount = state.get("mount_point", "")
+    if old_mount:
+        unmount_path(old_mount)
+        state.pop("mount_point", None)
+
     state["project_dir"] = new_dir
-    save_state(state)
 
     # 重启远端进程到新目录
     remote.stop()
     try:
         remote.start(state)
     except Exception as e:
+        save_state(state)
         return f"切换失败: {e}"
-    return f"已切换到 {new_dir}\n（远端 Claude Code 已在新目录重启）"
+
+    # 重新挂载到新目录
+    mount_ok, mount_msg = mount_remote(state)
+    save_state(state)
+
+    lines = [f"已切换到 {new_dir}", "(远端 Claude Code 已在新目录重启)"]
+    lines.append(f"[挂载] {mount_msg}")
+    return "\n".join(lines)
 
 def handle_ssh_status(args: dict) -> str:
     state = load_state()
@@ -416,6 +673,12 @@ def handle_ssh_status(args: dict) -> str:
         if e:
             lines.append(f"环境:   {e}")
         lines.append(f"远端工具: 已加载")
+        mp = state.get("mount_point")
+        if mp and is_mount(mp):
+            lines.append(f"挂载点: {mp} (sshfs)")
+        else:
+            ok, hint = check_sshfs()
+            lines.append(f"挂载点: 未挂载{' — ' + hint.splitlines()[0] if not ok else ''}")
     else:
         lines.append("状态:   未连接")
 
@@ -565,8 +828,11 @@ def main():
             sys.stderr.flush()
         try:
             remote.start(state)
+            # 恢复挂载 (失败不阻塞)
+            mount_ok, mount_msg = mount_remote(state)
+            save_state(state)
             if debug:
-                sys.stderr.write(f"[ssh-mcp] 恢复成功\n")
+                sys.stderr.write(f"[ssh-mcp] 恢复成功 | 挂载: {mount_msg}\n")
                 sys.stderr.flush()
         except Exception as e:
             if debug:

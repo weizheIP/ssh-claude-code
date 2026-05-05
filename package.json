@@ -1,7 +1,7 @@
 {
   "name": "ssh-claude-code",
-  "version": "1.0.0",
-  "description": "SSH Remote Claude Code Bridge — 在 Claude Code 中动态连接远端 Linux 机器进行远程开发",
+  "version": "1.1.0",
+  "description": "SSH Remote Claude Code Bridge — 在 Claude Code 中动态连接远端 Linux 机器进行远程开发,并通过 sshfs 挂载远端项目目录到本地",
   "type": "module",
   "main": "scripts/ssh-mcp-server.py",
   "files": [
@@ -14,6 +14,8 @@
     "scripts/remote-env-diagnose.sh",
     "scripts/remote-file-transfer.sh",
     "scripts/generate-claude-desktop-config.sh",
+    "scripts/install-sshfs.sh",
+    "scripts/install-sshfs-win.ps1",
     "config/hosts.example.tsv",
     "install.sh",
     "README.md",
