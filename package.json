@@ -8,7 +8,6 @@
     ".claude-plugin",
     ".mcp.json",
     "skills",
-    "hooks",
     "scripts/ssh-mcp-server.py",
     "scripts/remote-claude-code-mcp.sh",
     "scripts/check-remote-claude-code.sh",
