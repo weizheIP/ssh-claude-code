@@ -155,13 +155,19 @@ def check_sshfs() -> tuple[bool, str]:
 def is_mount(path: str) -> bool:
     """检测 path 是否为当前挂载点."""
     if IS_WIN:
-        # 我们启动的 sshfs-win 进程仍存活即认为挂载中
-        return _mount_proc is not None and _mount_proc.poll() is None
+        # Windows/WinFsp: 进程存活 + os.path.ismount 双重确认
+        if _mount_proc is None or _mount_proc.poll() is not None:
+            return False
+        try:
+            return os.path.ismount(path)
+        except Exception:
+            return True  # 进程在则大概率挂载中
     try:
         r = subprocess.run(["mount"], capture_output=True, text=True, timeout=5)
         target = os.path.realpath(path)
         for line in r.stdout.splitlines():
-            if f" on {target} " in line:
+            # 兼容 "... on /path (type...)" 和 "... on /path\n" 两种格式
+            if f" on {target} " in line or f" on {target}(" in line:
                 return True
     except Exception:
         pass
@@ -209,7 +215,7 @@ def mount_remote(state: dict) -> tuple[bool, str]:
     ssh_target = state["ssh_target"]
     project_dir = state["project_dir"]
     jump_host = state.get("jump_host", "")
-    host_label = state.get("host", "remote") or "remote"
+    host_label = (state.get("host", "remote") or "remote").replace(",", "_").replace(" ", "_")
 
     unmount_path(LOCAL_MOUNT)
 
@@ -263,6 +269,7 @@ def mount_remote(state: dict) -> tuple[bool, str]:
             return False, f"sshfs 挂载异常: {e}"
 
         # 等待挂载完成或失败
+        # os.path.ismount() 在 WinFsp 挂载完成前返回 False，完成后返回 True
         deadline = time.time() + 15
         while time.time() < deadline:
             if _mount_proc.poll() is not None:
@@ -275,10 +282,9 @@ def mount_remote(state: dict) -> tuple[bool, str]:
                 _mount_proc = None
                 return False, f"sshfs 挂载失败: {msg}"
             try:
-                # 能 listdir 即认为挂载就绪
-                os.listdir(LOCAL_MOUNT)
-                state["mount_point"] = LOCAL_MOUNT
-                return True, f"已挂载 {ssh_target}:{project_dir} → {LOCAL_MOUNT}"
+                if os.path.ismount(LOCAL_MOUNT):
+                    state["mount_point"] = LOCAL_MOUNT
+                    return True, f"已挂载 {ssh_target}:{project_dir} → {LOCAL_MOUNT}"
             except OSError:
                 pass
             time.sleep(0.3)
@@ -604,10 +610,8 @@ def handle_ssh_connect(args: dict) -> str:
         f"已连接 {ssh_target} → 远端 Claude Code 就绪 (项目: {project_dir}{jump_info})",
         "远端工具已自动加载,现在可以直接在远端机器上操作。",
     ]
-    if mount_ok:
-        lines.append(f"[挂载] {mount_msg}")
-    else:
-        lines.append(f"[挂载] {mount_msg}")
+    prefix = "[挂载 ✓]" if mount_ok else "[挂载 ✗]"
+    lines.append(f"{prefix} {mount_msg}")
     return "\n".join(lines)
 
 def handle_ssh_disconnect(args: dict) -> str:
