@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ssh-bridge": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/ssh-mcp-server.py"],
+      "description": "SSH 远端 Claude Code 透明代理 — /ssh-connect 连接远端开发机"
+    }
+  }
+}

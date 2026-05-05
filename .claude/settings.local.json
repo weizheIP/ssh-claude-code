@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(python3 scripts/ssh-mcp-server.py)",
+      "Bash(chmod +x *)",
+      "Bash(rm -f ~/.claude/ssh-state.json)",
+      "Bash(mkdir -p ~/.claude/skills)",
+      "Bash(rm -rf .claude/skills)",
+      "Bash(rm -f build/claude_desktop_config.json)"
+    ]
+  }
+}

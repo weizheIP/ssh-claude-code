@@ -1,0 +1,15 @@
+{
+  "name": "ssh-claude-code",
+  "version": "1.0.0",
+  "description": "SSH 远程开发桥接 — 动态连接远端 Linux 机器上的 Claude Code 进行远程开发",
+  "author": {
+    "name": "Zhuanz"
+  },
+  "repository": "https://github.com/weizheIP/ssh-claude-code",
+  "homepage": "https://github.com/weizheIP/ssh-claude-code#readme",
+  "license": "MIT",
+  "keywords": ["ssh", "remote", "linux", "claude-code", "development", "bridge", "mcp"],
+  "skills": "./skills/",
+  "hooks": "./hooks/",
+  "mcpServers": "./.mcp.json"
+}

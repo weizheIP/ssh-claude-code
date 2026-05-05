@@ -1,0 +1,10 @@
+# name	ssh_target	remote_project_dir	claude_bin	jump_host	env_setup
+# env_setup 用 && 连接多条命令，在 claude mcp serve 之前执行
+build-a	dev@10.0.0.21	/srv/my-app	claude
+test-b	dev@10.0.0.22	/opt/worker	claude
+# 需要跳板机的例子（取消注释并填入实际跳板机地址）：
+# internal-c	dev@10.0.1.50	/home/dev/backend	claude	gateway@bastion.example.com
+# 需要环境初始化的例子（nvm 安装的 node，claude 不在默认 PATH）：
+# dev-d	dev@10.0.1.60	/home/dev/frontend	claude		source ~/.nvm/nvm.sh && export PATH=~/.local/bin:$PATH
+# 既有跳板机又需要环境初始化：
+# prod-e	deploy@172.16.0.10	/srv/api	~/.local/bin/claude	ops@jump.corp.com	export NODE_ENV=production && source /etc/profile

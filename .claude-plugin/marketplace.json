@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ssh-claude-code",
+  "description": "SSH Remote Claude Code Bridge — 动态连接远端 Linux 机器进行远程开发",
+  "owner": {
+    "name": "Zhuanz"
+  },
+  "plugins": [
+    {
+      "name": "ssh-claude-code",
+      "description": "在 Claude Code 会话中通过 /ssh-connect 动态连接远端 Linux 机器上的 Claude Code。连接后远端全部工具(Bash/Read/Write/Edit/Agent/WebSearch等)以 remote_ 前缀自动可用。支持跳板机、环境初始化、多机切换。",
+      "version": "1.0.0",
+      "author": {
+        "name": "Zhuanz"
+      },
+      "source": "./",
+      "category": "remote-development",
+      "homepage": "https://github.com/weizheIP/ssh-claude-code",
+      "tags": ["ssh", "remote", "linux", "claude-code", "development", "bridge"]
+    }
+  ],
+  "version": "1.0.0"
+}

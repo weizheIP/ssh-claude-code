@@ -1,0 +1,20 @@
+# OMC state
+.omc/
+config/.omc/
+
+# Python
+scripts/__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Build
+build/
+
+# User hosts config (keep example only)
+config/hosts.tsv
+
+# IDE
+.vscode/
+.idea/
